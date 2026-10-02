@@ -8,8 +8,8 @@ In this work, we developed ABHunter, a framework designed for the exploration an
 ```bash
 # Only once for installation:
 # Clone the repository
-git clone https://github.com/VIIC12/antibody_search.git --branch publication
-cd antibody_search
+git clone https://github.com/SchiffnerLab/abhunter.git
+cd abhunter
 
 # Create virtual environment
 python3 -m venv .venv
@@ -60,7 +60,7 @@ python -m streamlit run app.py
 
 ## Architecture
 ```
-antibody_search/               # Self-contained antibody_search directory
+abhunter/                      # Repository root
 ├── app.py                     # Streamlit web interface (main entry)
 ├── pages/
 │   ├── search.py              # Search page

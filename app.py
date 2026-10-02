@@ -53,7 +53,7 @@ def render_sidebar():
 
     This software is licensed under the GNU GPLv3 License.
     
-    [ABHunter GitHub Repository](https://github.com/VIIC12/antibody_search#)
+    [ABHunter GitHub Repository](https://github.com/SchiffnerLab/abhunter)
     """)
     
     # Stick inside the sidebar near the bottom, without overflowing when the sidebar is resized
@@ -78,8 +78,8 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded",
         menu_items={
-            'Get Help': 'https://github.com/VIIC12/antibody_search',
-            'Report a bug': 'https://github.com/VIIC12/antibody_search/issues',
+            'Get Help': 'https://github.com/SchiffnerLab/abhunter',
+            'Report a bug': 'https://github.com/SchiffnerLab/abhunter/issues',
             'About': "**ABHunter** is a high-performance antibody database search tool that lets you search the Observed Antibody Space (OAS) database in seconds and analyze how frequently specific V/D/J genes, CDR lengths, and motifs appear in human, non-vaccinated, healthy patients. For unpaired heavy or light chain data, ABHunter provides inferred V/J gene pairing information and statistical frequencies based on paired antibody data from the database. Please refer to the sidebar for proper citations when using this tool in your research. Thank you for using ABHunter!"
         }
     )
