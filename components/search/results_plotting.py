@@ -17,21 +17,26 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from components.search.styling import (
     HEAVY_COLOR,
-    HEAVY_COLORSCALE,
     HEAVY_FILL,
     HEAVY_LINE,
+    INFERRED_HEAVY_COLORSCALE,
+    INFERRED_LIGHT_COLORSCALE,
     LIGHT_COLOR,
-    LIGHT_COLORSCALE,
     LIGHT_FILL,
     LIGHT_LINE,
     get_chain_color,
+    get_chain_colorscale,
+    get_heavy_colorscale,
+    get_light_colorscale,
     icon_heading,
+    is_dark_mode,
     ensure_spinner_css,
     render_preparing_button,
 )
 import pandas as pd
 import numpy as np
 from datetime import datetime
+from math import exp, lgamma, log
 from src.search_engine import AntibodySearchEngine
 
 PLOTLY_DISPLAY_CONFIG = {
@@ -1142,7 +1147,7 @@ def _create_inferred_heatmap(
         max_partners: Maximum number of partner families
     
     Returns:
-        Tuple of (pivot_df, row_label, col_label, title, caption) or None if no data
+        Tuple of (pivot_df, text_df, row_label, col_label, title, caption) or None if no data
     """
     chain_type = (chain_type or "Heavy").capitalize()
     gene_type = gene_type.upper()
@@ -1219,13 +1224,17 @@ def _create_inferred_heatmap(
         distribution = engine.get_inferred_distribution(chain_type, source_family, gene_type=yaxis_gene_type, top_n=max_partners * 3)
         if not distribution:
             continue
-        for partner_family, probability in distribution:
-            if probability is None:
+        for partner_family, log2_r in distribution:
+            if log2_r is None:
                 continue
+            status = engine.get_inferred_pair_status(
+                chain_type, source_family, partner_family, gene_type=yaxis_gene_type
+            )
             records.append({
                 'source_family': source_family,
                 'partner_family': partner_family,
-                'probability': float(probability)
+                'log2_R': float(log2_r),
+                'significant': status in ('Enriched', 'Depleted'),
             })
 
     if not records:
@@ -1233,7 +1242,7 @@ def _create_inferred_heatmap(
 
     matrix_df = pd.DataFrame(records)
     partner_scores = (
-        matrix_df.groupby('partner_family')['probability']
+        matrix_df.groupby('partner_family')['log2_R']
         .max()
         .sort_values(ascending=False)
         .head(max_partners)
@@ -1245,58 +1254,110 @@ def _create_inferred_heatmap(
     pivot_df = matrix_df.pivot_table(
         index='source_family',
         columns='partner_family',
-        values='probability',
+        values='log2_R',
         aggfunc='max',
         fill_value=0.0
     )
+    text_df = matrix_df.pivot_table(
+        index='source_family',
+        columns='partner_family',
+        values='significant',
+        aggfunc='max',
+        fill_value=False,
+    )
     
-    # Order x-axis (columns) by probability for the top gene (most frequent, first in top_sources)
+    # Order x-axis (columns) by enrichment for the top gene (most frequent, first in top_sources)
     if top_sources and top_sources[0] in pivot_df.index:
         top_gene = top_sources[0]
-        # Get probabilities for the top gene, order by highest to lowest
-        top_gene_probs = pivot_df.loc[top_gene].sort_values(ascending=False)
+        # Get log2_R for the top gene, order by highest to lowest
+        top_gene_scores = pivot_df.loc[top_gene].sort_values(ascending=False)
         # Use this order for columns (x-axis)
-        column_order = top_gene_probs.index.tolist()
+        column_order = top_gene_scores.index.tolist()
     else:
         # Fallback to previous ordering
         column_order = partner_scores.index.tolist()
     
     pivot_df = pivot_df.reindex(index=top_sources, columns=column_order, fill_value=0.0)
+    text_df = (
+        text_df.reindex(index=top_sources, columns=column_order, fill_value=False)
+        .fillna(False)
+        .map(lambda significant: "*" if significant else "")
+    )
 
     if pivot_df.empty or not np.any(pivot_df.values):
         return None
 
     # Set labels based on chain type and gene type
+    # Scores are log2_R = log2(P_obs / P_rand), not pairing probabilities
+    log2_r_caption = "Values are log₂(R) = log₂(P_obs / P_rand); * = significant Enriched/Depleted."
     if chain_type == 'Heavy':
         if gene_type == 'V':
             row_label = "Heavy V Family"
-            col_label = "Predicted Light V Family"
-            title = "Predicted V<sub>L</sub> Families"
-            caption = "Based on heavy-to-light V pairing frequencies (`h_to_l`)."
+            col_label = "Predicted IG(K/L)V Family"
+            title = "Predicted IG(K/L)V Families"
+            caption = log2_r_caption
         else:  # J
             row_label = "Heavy J Family"
-            col_label = "Predicted Light J Family"
-            title = "Predicted J<sub>L</sub> Families"
-            caption = "Based on heavy-to-light J pairing frequencies (`h_to_l`)."
+            col_label = "Predicted IG(K/L)J Family"
+            title = "Predicted IG(K/L)J Families"
+            caption = log2_r_caption
     else:  # Light
         if gene_type == 'V':
             row_label = "Light V Family"
             col_label = "Predicted Heavy V Family"
             title = "Predicted V<sub>H</sub> Families"
-            caption = "Based on light-to-heavy V pairing frequencies (`l_to_h`)."
+            caption = log2_r_caption
         else:  # J
             row_label = "Light J Family"
             col_label = "Predicted Heavy J Family"
             title = "Predicted J<sub>H</sub> Families"
-            caption = "Based on light-to-heavy J pairing frequencies (`l_to_h`)."
+            caption = log2_r_caption
     
-    return (pivot_df, row_label, col_label, title, caption)
+    return (pivot_df, text_df, row_label, col_label, title, caption)
 
 
 def _apply_heatmap_axis_outline(fig: go.Figure) -> go.Figure:
     """Draw a black box outline around a heatmap (same as paired V/J pairing plots)."""
     fig.update_xaxes(showline=True, linewidth=1, linecolor="black", mirror=True)
     fig.update_yaxes(showline=True, linewidth=1, linecolor="black", mirror=True)
+    return fig
+
+
+def _apply_inferred_significance_markers(fig: go.Figure, text_df: pd.DataFrame) -> go.Figure:
+    """Overlay '*' on cells with significant Enriched/Depleted Status."""
+    fig.update_traces(
+        text=text_df.values,
+        texttemplate="%{text}",
+        textfont={"size": 33, "color": "black"},
+    )
+    return fig
+
+
+def _build_inferred_heatmap_figure(
+    pivot_df: pd.DataFrame,
+    text_df: pd.DataFrame,
+    row_label: str,
+    col_label: str,
+    title: str,
+    color_scale,
+) -> go.Figure:
+    """Build an inferred pairing heatmap with log2(R) colors and significance stars."""
+    fig = px.imshow(
+        pivot_df,
+        labels=dict(x=col_label, y=row_label, color="log₂(R)"),
+        color_continuous_scale=color_scale,
+        color_continuous_midpoint=0,
+        aspect="auto",
+    )
+    fig.update_layout(
+        title={"text": title, "x": 0.5, "xanchor": "center", "font": {"size": 16}},
+        margin=dict(l=60, r=40, t=60, b=60),
+        xaxis=dict(side="bottom"),
+        yaxis=dict(autorange="reversed"),
+        coloraxis_colorbar=dict(title="log₂(R)"),
+    )
+    _apply_inferred_significance_markers(fig, text_df)
+    _apply_heatmap_axis_outline(fig)
     return fig
 
 
@@ -1344,7 +1405,8 @@ def render_inferred_pairing_plots(
         "show_v": show_v,
         "show_j": show_j,
         "max_sources": max_sources,
-        "max_partners": max_partners
+        "max_partners": max_partners,
+        "inferred_heatmap_version": 2,  # log2_R + Status stars
     }
     cache_key_hash = abs(hash(json.dumps(cache_key_seed, sort_keys=True, default=str)))
     inferred_cache_key = f"inferred_heatmap_{cache_key_hash}"
@@ -1387,15 +1449,13 @@ def render_inferred_pairing_plots(
     heading_icon = ":material/genetics:" if chain_type == "Heavy" else "🧬"
     heading_chain = "Light" if chain_type == "Heavy" else "Heavy"
     
-    # Color scheme based on what we're inferring (not the chain type being searched)
-    # "Inferred Light" -> red (matching light chain plots)
-    # "Inferred Heavy" -> blue (matching heavy chain plots)
+    # Diverging log2(R) scale centered at 0
+    # Heavy search → predicted light: red (>0) → white (0) → blue (<0)
+    # Light search → predicted heavy: blue (>0) → white (0) → red (<0)
     if chain_type == 'Heavy':
-        # Inferring Light families — light-chain palette
-        color_scale = LIGHT_COLORSCALE
+        color_scale = INFERRED_LIGHT_COLORSCALE
     else:
-        # Inferring Heavy families — heavy-chain palette
-        color_scale = HEAVY_COLORSCALE
+        color_scale = INFERRED_HEAVY_COLORSCALE
     
     # Render plots in a row matching the gene plot widths
     # For heavy: V plot in first column (same width as IGHV), J plot in third column (same width as IGHJ)
@@ -1407,40 +1467,18 @@ def render_inferred_pairing_plots(
         
         cols = st.columns(num_columns)
         
-        for gene_type, (pivot_df, row_label, col_label, title, caption) in plots_to_render:
+        for gene_type, (pivot_df, text_df, row_label, col_label, title, caption) in plots_to_render:
             if gene_type == 'V':
                 with cols[0]:  # Match IGHV plot width
-                    fig = px.imshow(
-                        pivot_df,
-                        labels=dict(x=col_label, y=row_label, color="Pair Probability (%)"),
-                        color_continuous_scale=color_scale,
-                        aspect="auto"
+                    fig = _build_inferred_heatmap_figure(
+                        pivot_df, text_df, row_label, col_label, title, color_scale
                     )
-                    fig.update_layout(
-                        title={"text": title, "x": 0.5, "xanchor": "center", "font": {"size": 16}},
-                        margin=dict(l=60, r=40, t=60, b=60),
-                        xaxis=dict(side="bottom"),
-                        yaxis=dict(autorange="reversed"),
-                        coloraxis_colorbar=dict(title="Probability (%)")
-                    )
-                    _apply_heatmap_axis_outline(fig)
                     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_DISPLAY_CONFIG, key=f"inferred_{chain_type.lower()}_v_plot")
             elif gene_type == 'J':
                 with cols[2]:  # Match IGHJ plot width
-                    fig = px.imshow(
-                        pivot_df,
-                        labels=dict(x=col_label, y=row_label, color="Pair Probability (%)"),
-                        color_continuous_scale=color_scale,
-                        aspect="auto"
+                    fig = _build_inferred_heatmap_figure(
+                        pivot_df, text_df, row_label, col_label, title, color_scale
                     )
-                    fig.update_layout(
-                        title={"text": title, "x": 0.5, "xanchor": "center", "font": {"size": 16}},
-                        margin=dict(l=60, r=40, t=60, b=60),
-                        xaxis=dict(side="bottom"),
-                        yaxis=dict(autorange="reversed"),
-                        coloraxis_colorbar=dict(title="Probability (%)")
-                    )
-                    _apply_heatmap_axis_outline(fig)
                     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_DISPLAY_CONFIG, key=f"inferred_{chain_type.lower()}_j_plot")
     else:
         # Light chain: V, J gene plots (2 columns)
@@ -1449,44 +1487,29 @@ def render_inferred_pairing_plots(
 
         cols = st.columns(num_columns)
         
-        for i, (gene_type, (pivot_df, row_label, col_label, title, caption)) in enumerate(plots_to_render):
+        for i, (gene_type, (pivot_df, text_df, row_label, col_label, title, caption)) in enumerate(plots_to_render):
             with cols[i]:  # Match V and J plot widths
-                fig = px.imshow(
-                    pivot_df,
-                    labels=dict(x=col_label, y=row_label, color="Pair Probability (%)"),
-                    color_continuous_scale=color_scale,
-                    aspect="auto"
+                fig = _build_inferred_heatmap_figure(
+                    pivot_df, text_df, row_label, col_label, title, color_scale
                 )
-                fig.update_layout(
-                    title={"text": title, "x": 0.5, "xanchor": "center", "font": {"size": 16}},
-                    margin=dict(l=60, r=40, t=60, b=60),
-                    xaxis=dict(side="bottom"),
-                    yaxis=dict(autorange="reversed"),
-                    coloraxis_colorbar=dict(title="Probability (%)")
-                )
-                _apply_heatmap_axis_outline(fig)
                 st.plotly_chart(fig, use_container_width=True, config=PLOTLY_DISPLAY_CONFIG, key=f"inferred_light_{gene_type.lower()}_plot_{i}")
 
     # Add to collector if provided
     if collector is not None:
-        for gene_type, (pivot_df, row_label, col_label, title, caption) in plots_to_render:
+        for gene_type, (pivot_df, text_df, row_label, col_label, title, caption) in plots_to_render:
             heatmap_export = pivot_df.copy()
             heatmap_export.index.name = row_label
             heatmap_export.columns.name = col_label
-            fig = px.imshow(
-                pivot_df,
-                labels=dict(x=col_label, y=row_label, color="Pair Probability (%)"),
-                color_continuous_scale=color_scale,
-                aspect="auto"
+            fig = _build_inferred_heatmap_figure(
+                pivot_df, text_df, row_label, col_label, title, color_scale
             )
-            _apply_heatmap_axis_outline(fig)
             collector.append((
                 f"inferred_{heading_chain.lower()}_{gene_type.lower()}_heatmap",
                 prepare_export_figure(fig),
                 heatmap_export.reset_index().melt(
                     id_vars=[row_label],
                     var_name=col_label,
-                    value_name="probability"
+                    value_name="log2_R"
                 )
             ))
 
@@ -1599,7 +1622,7 @@ def render_paired_v_gene_heatmap(
     fig = px.imshow(
         heatmap_df,
         labels=dict(x="Light V Gene", y="Heavy V Gene", color="Pair Count"),
-        color_continuous_scale=HEAVY_COLORSCALE,
+        color_continuous_scale=get_heavy_colorscale(),
         aspect="auto"
     )
 
@@ -1695,7 +1718,7 @@ def render_paired_j_gene_heatmap(
     fig = px.imshow(
         heatmap_df,
         labels=dict(x="Light J Gene", y="Heavy J Gene", color="Pair Count"),
-        color_continuous_scale=LIGHT_COLORSCALE,
+        color_continuous_scale=get_light_colorscale(),
         aspect="auto"
     )
 
@@ -2291,6 +2314,8 @@ def plot_cdr_length_distribution(
     
     # Count occurrences of each length (each length gets its own bar)
     length_counts = lengths.value_counts().sort_index()
+    total = float(length_counts.sum())
+    length_pct = (length_counts.astype(float) / total * 100.0) if total > 0 else length_counts.astype(float)
     
     title_config = {
         'text': title,
@@ -2298,16 +2323,22 @@ def plot_cdr_length_distribution(
         'xanchor': 'center'
     }
 
-    color_scale = LIGHT_COLORSCALE if chain_type == "light" else HEAVY_COLORSCALE
+    color_scale = get_chain_colorscale(chain_type)
+
+    # Anchor color scale at 0 so the top count always maps to the dark end.
+    # Without this, a single bar (e.g. one CDR length after a tight search) sits mid-scale.
+    max_pct = float(length_pct.max()) if len(length_pct) else 1.0
+    color_range_max = max_pct if max_pct > 0 else 1.0
 
     # Create bar chart (not histogram) so each length is a separate bar
     fig = px.bar(
-        x=length_counts.index,
-        y=length_counts.values,
+        x=length_pct.index,
+        y=length_pct.values,
         title=title,
-        labels={'x': 'Length (amino acids)', 'y': 'Frequency'},
-        color=length_counts.values,
-        color_continuous_scale=color_scale
+        labels={'x': 'Length (amino acids)', 'y': 'Relative Occurrence (%)'},
+        color=length_pct.values,
+        color_continuous_scale=color_scale,
+        range_color=[0, color_range_max],
     )
     
     fig.update_layout(
@@ -2317,20 +2348,36 @@ def plot_cdr_length_distribution(
         xaxis={'type': 'category'},  # Ensure discrete x-axis (each length is separate)
         title=title_config,
         xaxis_title="Length (amino acids)",
-        yaxis_title="Frequency"
+        yaxis_title="Relative Occurrence (%)"
     )
     
-    fig.update_coloraxes(colorscale=color_scale, showscale=False)
-    fig.update_traces(
-        hovertemplate="Length: %{x}<br>Frequency: %{y}<extra></extra>"
+    fig.update_coloraxes(
+        colorscale=color_scale,
+        showscale=False,
+        cmin=0,
+        cmax=color_range_max,
     )
+    # A single category otherwise fills almost the full plot width.
+    n_lengths = int(len(length_pct))
+    trace_updates = {
+        "hovertemplate": "Length: %{x}<br>%: %{y:.1f}<extra></extra>",
+        "customdata": length_counts.values,
+    }
+    if n_lengths == 1:
+        trace_updates["width"] = 0.35
+    elif n_lengths == 2:
+        trace_updates["width"] = 0.45
+    fig.update_traces(**trace_updates)
 
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_DISPLAY_CONFIG)
 
     if collector is not None:
-        export_df = length_counts.reset_index()
-        export_df.columns = ["cdr_length", "count"]
-        export_df["chain_type"] = chain_type
+        export_df = pd.DataFrame({
+            "cdr_length": length_counts.index,
+            "count": length_counts.values,
+            "percent": length_pct.values,
+            "chain_type": chain_type,
+        })
         collector.append((f"{chain_type}_{title}", prepare_export_figure(fig), export_df.copy()))
 
 
@@ -2361,14 +2408,19 @@ def plot_gene_distribution(
     # Get gene counts (optionally aggregated by subfamily/family)
     if group_mode in ("subfamily", "family"):
         grouped = df[column].map(lambda g: _map_gene_to_group_label(g, group_mode))
-        gene_counts = grouped.value_counts().head(max_genes)
+        gene_counts_all = grouped.value_counts()
         y_label = "Subfamily" if group_mode == "subfamily" else "Family"
     else:
-        gene_counts = df[column].value_counts().head(max_genes)
+        gene_counts_all = df[column].value_counts()
         y_label = "Gene"
+
+    gene_counts = gene_counts_all.head(max_genes)
     
     if len(gene_counts) == 0:
         return
+
+    total = float(gene_counts_all.sum())
+    gene_pct = (gene_counts.astype(float) / total * 100.0) if total > 0 else gene_counts.astype(float)
     
     title_config = {
         'text': title,
@@ -2376,21 +2428,21 @@ def plot_gene_distribution(
         'xanchor': 'center'
     }
 
-    color_scale = LIGHT_COLORSCALE if chain_type == "light" else HEAVY_COLORSCALE
+    color_scale = get_chain_colorscale(chain_type)
 
     # Anchor color scale at 0 so the top count always maps to the dark end.
     # Without this, a single bar (e.g. one family after grouping) sits mid-scale.
-    max_count = float(gene_counts.max()) if len(gene_counts) else 1.0
-    color_range_max = max_count if max_count > 0 else 1.0
+    max_pct = float(gene_pct.max()) if len(gene_pct) else 1.0
+    color_range_max = max_pct if max_pct > 0 else 1.0
 
     # Create bar chart
     fig = px.bar(
-        x=gene_counts.values,
-        y=gene_counts.index,
+        x=gene_pct.values,
+        y=gene_pct.index,
         orientation='h',
         title=title,
-        labels={'x': 'Count', 'y': y_label},
-        color=gene_counts.values,
+        labels={'x': 'Relative Occurrence (%)', 'y': y_label},
+        color=gene_pct.values,
         color_continuous_scale=color_scale,
         range_color=[0, color_range_max],
     )
@@ -2401,7 +2453,7 @@ def plot_gene_distribution(
         margin=dict(l=120, r=40, t=60, b=70),
         yaxis={'categoryorder': 'total ascending'},
         title=title_config,
-        xaxis_title="Count",
+        xaxis_title="Relative Occurrence (%)",
         yaxis_title=y_label
     )
     
@@ -2411,17 +2463,28 @@ def plot_gene_distribution(
         cmin=0,
         cmax=color_range_max,
     )
-    fig.update_traces(
-        hovertemplate=f"{y_label}: %{{y}}<br>Count: %{{x}}<extra></extra>"
-    )
+    # A single category otherwise fills almost the full plot height.
+    n_genes = int(len(gene_pct))
+    trace_updates = {
+        "hovertemplate": f"{y_label}: %{{y}}<br>%: %{{x:.1f}}<extra></extra>",
+        "customdata": gene_counts.values,
+    }
+    if n_genes == 1:
+        trace_updates["width"] = 0.35
+    elif n_genes == 2:
+        trace_updates["width"] = 0.45
+    fig.update_traces(**trace_updates)
 
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_DISPLAY_CONFIG)
 
     if collector is not None:
-        export_df = gene_counts.reset_index()
-        export_df.columns = [y_label.lower(), "count"]
-        export_df["chain_type"] = chain_type
-        export_df["group_mode"] = group_mode
+        export_df = pd.DataFrame({
+            y_label.lower(): gene_counts.index,
+            "count": gene_counts.values,
+            "percent": gene_pct.values,
+            "chain_type": chain_type,
+            "group_mode": group_mode,
+        })
         collector.append((f"{chain_type}_{title}", prepare_export_figure(fig), export_df.copy()))
 
 
@@ -2514,14 +2577,84 @@ def prepare_donor_plot_data(
     return filtered, meta
 
 
-def _fmt_donor_hpm(value: float) -> str:
+def _fmt_donor_hpm(value: float, *, decimals: int = 2) -> str:
+    """Format hits-per-million for Frequency Summary (default 2 decimal places)."""
     if value is None or not np.isfinite(value):
         return "—"
     if value == 0:
-        return "0"
-    if abs(value) >= 1000:
-        return f"{value:,.4g}"
-    return f"{value:.4g}"
+        return f"{0:.{decimals}f}"
+    return f"{value:,.{decimals}f}"
+
+
+def _wilson_score_interval(
+    successes: int,
+    n: int,
+    *,
+    z: float = 1.959963984540054,  # Φ^{-1}(0.975) for 95% CI
+) -> Tuple[float, float]:
+    """
+    Wilson score CI for a binomial proportion (successes / n).
+
+    Returns (low, high) on the probability scale [0, 1].
+    """
+    if n <= 0:
+        return (float("nan"), float("nan"))
+    successes = int(max(0, min(int(successes), n)))
+    phat = successes / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (phat + z2 / (2.0 * n)) / denom
+    half = (z / denom) * np.sqrt((phat * (1.0 - phat) + z2 / (4.0 * n)) / n)
+    low = max(0.0, float(center - half))
+    high = min(1.0, float(center + half))
+    return (low, high)
+
+
+def _binom_cdf_le_p05(k: int, n: int) -> float:
+    """P(X ≤ k) for X ~ Binomial(n, 0.5), evaluated in log-space."""
+    if n <= 0:
+        return 1.0
+    if k < 0:
+        return 0.0
+    if k >= n:
+        return 1.0
+    log_terms = [
+        lgamma(n + 1) - lgamma(i + 1) - lgamma(n - i + 1) - n * log(2.0)
+        for i in range(k + 1)
+    ]
+    m = max(log_terms)
+    return float(sum(exp(t - m) for t in log_terms) * exp(m))
+
+
+def _median_exact_binomial_ci(
+    values: np.ndarray,
+    *,
+    alpha: float = 0.05,
+) -> Tuple[float, float]:
+    """
+    Non-parametric exact binomial CI for the median via order statistics.
+
+    Finds the largest d with Binomial(n, 0.5) CDF at d ≤ α/2, then returns
+    [X_(d+1), X_(n-d)] from the sorted sample (1-based ranks).
+    """
+    x = np.sort(np.asarray(values, dtype=float))
+    x = x[np.isfinite(x)]
+    n = int(x.size)
+    if n == 0:
+        return (float("nan"), float("nan"))
+    if n == 1:
+        return (float(x[0]), float(x[0]))
+
+    target = float(alpha) / 2.0
+    d = -1
+    for i in range(n):
+        if _binom_cdf_le_p05(i, n) <= target + 1e-15:
+            d = i
+        else:
+            break
+    if d < 0:
+        return (float(x[0]), float(x[-1]))
+    return (float(x[d]), float(x[n - d - 1]))
 
 
 def compute_donor_plot_summary_stats(
@@ -2533,17 +2666,47 @@ def compute_donor_plot_summary_stats(
         return pd.DataFrame(columns=["Metric", "Value"])
 
     n = len(filtered_df)
+    n_total_available = int(meta.get("n_input", n) or n)
     n_zero = int((filtered_df["hits"] == 0).sum()) if "hits" in filtered_df.columns else 0
+    n_positive = n - n_zero
     zero_pct = (100.0 * n_zero / n) if n else 0.0
+    prevalence_pct = (100.0 * n_positive / n) if n else 0.0
+    prev_low, prev_high = _wilson_score_interval(n_positive, n)
+    if n and np.isfinite(prev_low) and np.isfinite(prev_high):
+        prevalence_value = (
+            f"{prevalence_pct:.1f}% "
+            f"(95% CI {100.0 * prev_low:.1f}–{100.0 * prev_high:.1f}%)"
+        )
+    else:
+        prevalence_value = "—"
     threshold = meta.get("required_sequences", float("nan"))
     include_zeros = meta.get("include_zero_hit_donors", True)
     n_zero_above = meta.get("n_zero_hit_above_threshold", n_zero)
 
     linear = filtered_df["hits_per_million"].astype(float).to_numpy()
-    lin_mean = float(np.nanmean(linear))
-    lin_median = float(np.nanmedian(linear))
-    lin_q1, lin_q3 = [float(x) for x in np.nanpercentile(linear, [25, 75])]
-    lin_iqr = lin_q3 - lin_q1
+    finite = linear[np.isfinite(linear)]
+    lin_mean = float(np.nanmean(finite)) if finite.size else float("nan")
+    lin_median = float(np.nanmedian(finite)) if finite.size else float("nan")
+    med_low, med_high = _median_exact_binomial_ci(finite, alpha=0.05)
+    if finite.size and np.isfinite(lin_median) and np.isfinite(med_low) and np.isfinite(med_high):
+        median_value = (
+            f"{_fmt_donor_hpm(lin_median)} /M "
+            f"(95% CI {_fmt_donor_hpm(med_low)}–{_fmt_donor_hpm(med_high)} /M)"
+        )
+    else:
+        median_value = "—"
+    if finite.size:
+        lin_q1, lin_q3 = [float(x) for x in np.nanpercentile(finite, [25, 75])]
+        lin_iqr = lin_q3 - lin_q1
+    else:
+        lin_q1 = lin_q3 = lin_iqr = float("nan")
+    # GeoMean on real HPM (plot flooring is display-only). Any zero ⇒ GeoMean = 0.
+    if finite.size == 0:
+        lin_geomean = float("nan")
+    elif np.any(finite <= 0):
+        lin_geomean = 0.0
+    else:
+        lin_geomean = float(np.exp(np.mean(np.log(finite))))
 
     if include_zeros:
         zero_hit_value = f"{n_zero:,} ({zero_pct:.1f}%)"
@@ -2553,17 +2716,19 @@ def compute_donor_plot_summary_stats(
     apply_threshold = meta.get("apply_sequence_threshold", True)
     if apply_threshold and np.isfinite(threshold):
         threshold_value = f"≥ {int(threshold):,} sequences"
-    elif np.isfinite(threshold):
-        threshold_value = f"not applied (all donors; ref. ≥ {int(threshold):,})"
+    elif not apply_threshold:
+        threshold_value = "not applied (using all donors)"
     else:
         threshold_value = "—"
 
     rows = [
-        ("Donors in plot", f"{n:,}"),
+        ("Donors in plot", f"{n:,} (of {n_total_available:,})"),
         ("Sequence threshold", threshold_value),
         ("Zero-hit donors", zero_hit_value),
+        ("Prevalence", prevalence_value),
         ("Mean", f"{_fmt_donor_hpm(lin_mean)} /M"),
-        ("Median", f"{_fmt_donor_hpm(lin_median)} /M"),
+        ("Median", median_value),
+        ("GeoMean", f"{_fmt_donor_hpm(lin_geomean)} /M"),
         (
             "IQR",
             f"{_fmt_donor_hpm(lin_iqr)}  [Q1={_fmt_donor_hpm(lin_q1)}, Q3={_fmt_donor_hpm(lin_q3)}]",
@@ -2630,6 +2795,7 @@ def build_donor_hits_figure(
         line_color = LIGHT_LINE
         fill_color = LIGHT_FILL
     else:
+        # Match CDR length / gene bar accent (colorscale max), not heading text color
         marker_color = HEAVY_COLOR
         line_color = HEAVY_LINE
         fill_color = HEAVY_FILL
@@ -2667,15 +2833,18 @@ def build_donor_hits_figure(
         height=height,
         boxgroupgap=0.3,
         margin=margin or dict(l=70, r=20, t=70, b=30),
-        template="plotly_white",
+        template="plotly_dark" if is_dark_mode() else "plotly_white",
         yaxis=dict(
-            title="Frequency (Per Million)",
+            title="Frequency (Hits per Million)",
             type="linear",
             range=list(y_axis_range),
             tickmode="array",
             tickvals=yticks,
             ticktext=ticktext,
-            gridcolor="rgba(0,0,0,0.15)",
+            showgrid=True,
+            gridwidth=1,
+            # Black grid is invisible on dark Streamlit theme; match CDR plot visibility.
+            gridcolor="rgba(255,255,255,0.15)" if is_dark_mode() else "rgba(0,0,0,0.15)",
             zeroline=False,
         ),
     )

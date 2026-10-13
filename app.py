@@ -44,7 +44,7 @@ def render_sidebar():
 
     ---
     ### :material/lab_profile: License & Credits
-    **If you use this software, please cite:** Schlegel et al. (2026). *Under submission.*
+    **If you use this software, please cite:** Schlegel et al. *Front. Immunol.* (2026). *accepted.*
     
     **Data Source Citations:**
     - [OAS Database](https://opig.stats.ox.ac.uk/webapps/oas/)
@@ -100,11 +100,11 @@ def main():
 
     search = st.Page("pages/search.py", title="Database Search", icon=":material/search:", default=True)
     igblast = st.Page("pages/igblast.py", title="IgBLAST", icon=":material/genetics:")
-    statistics = st.Page("pages/statistics.py", title="Statistics", icon=":material/bar_chart:")
+    inferred_pairing = st.Page("pages/inferred_pairing.py", title="Inferred Pairing", icon=":material/modeling:")
     imprint = st.Page("pages/imprint.py", title="Imprint", icon=":material/info:")
 
     entry_page = st.navigation(
-        [search, igblast, statistics, imprint],
+        [search, igblast, inferred_pairing, imprint],
         position="top",
     )
 
