@@ -1,6 +1,6 @@
 # ABHunter - Real-Time Exploration of the Billion-Scale Human Repertoire for Precursor Frequency Analysis and Rational Antibody Design
 
-In this work, we developed ABHunter, a framework designed for the exploration and filtering of the 1.86-billion-sequence healthy-human subset of the [Observed Antibody Space (OAS)](https://opig.stats.ox.ac.uk/webapps/oas/) in a matter of seconds. Our tool is accessible through any standard web browser [abhunter.iwe-lab.de](abhunter.iwe-lab.de) and supports deeper, custom analysis through local installation that was previously impractical, making the datasets curated by Olsen et al. and Kovaltsuk et al. broadly accessible.
+In this work, we developed ABHunter, a framework designed for the exploration and filtering of the 1.86-billion-sequence healthy-human subset of the [Observed Antibody Space (OAS)](https://opig.stats.ox.ac.uk/webapps/oas/) in a matter of seconds. Our tool is accessible through any standard web browser [abhunter.org](http://abhunter.org) and supports deeper, custom analysis through local installation that was previously impractical, making the datasets curated by Olsen et al. and Kovaltsuk et al. broadly accessible.
 
 ### For local execution w/o docker
 
