@@ -111,19 +111,18 @@ ABHunter is a free open-source software licensed under the MIT License. The ABHu
 
 ## Citation
 If you use this repository code or data in your work, please cite the relavant work as below:
+
 ```bibtex
-@unpublished{Schlegel2026,
-    title = {"Real-Time Exploration of the Billion-Scale Human Repertoire for Precursor Frequency Analysis and Rational Antibody Design},
-    author = {Tom U. Schlegel and Jannis de Riz and Jakob R. Riccabona and Franz Dietzmeyer and and Julia Koehler and Jens Meiler and Clara T. Schoeder and Torben Schiffner},
-    year = {2026},
-   doi = {to appear},
-   journal = {to appear},
-   pages = {to appear},
-   volume = {to appear},
-   url = {to appear},
+@article{Schlegel2026,
+   title = {Real-time exploration of the billion-scale human repertoire for precursor frequency analysis and rational antibody design},
+   author = {Tom U. Schlegel and Jannis von Blanckenburg de Riz and Jakob R. Riccabona and Franz Dietzmeyer and Julia Koehler Leman and Jens Meiler and Clara T. Schoeder and Torben Schiffner},
+   doi = {10.3389/fimmu.2026.1958625},
+   journal = {Frontiers in Immunology},
+   pages = {1958625},
+   volume = {17},
+   url = {https://doi.org/10.3389/fimmu.2026.1958625},
    year = {2026},
-   publisher = {to appear},
-   note    = {under submission}
+   publisher = {Frontiers Media SA}
 }
 
 @article{Olsen2022,
